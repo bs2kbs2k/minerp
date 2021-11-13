@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+    'minerp-server',
+    'minerp-client',
+    'minerp-common'
+]

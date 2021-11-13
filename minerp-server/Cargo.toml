@@ -1,0 +1,17 @@
+[package]
+name = "minerp-server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.45"
+env_logger = "0.9.0"
+lazy_static = "1.4.0"
+log = "0.4.14"
+minerp-common = { version = "0.1.0", path = "../minerp-common" }
+rand = "0.8.4"
+rustls-pemfile = "0.2.1"
+tokio = { version = "1.13.0", features = ["net", "rt-multi-thread", "sync", "macros"] }
+tokio-rustls = "0.23.1"
