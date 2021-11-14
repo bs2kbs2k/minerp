@@ -28,8 +28,7 @@
         - uses: actions-rs/cargo@v1
           with:
             command: build
-            use-cross: true
-            args: --release --target=x86_64-unknown-linux-musl --bin minerp-client
+            args: --release --bin minerp-client
         - uses: actions/upload-artifact@v2
           with:
             name: linux-bin
