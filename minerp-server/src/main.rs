@@ -4,7 +4,7 @@
 
 use lazy_static::lazy_static;
 use minerp_common::*;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls;
 
 #[macro_use]
@@ -106,12 +106,18 @@ async fn main() {
     let _ = CONN_CONF.clone(); // eager evaluate lazy static
     let minecraft_handle = tokio::task::spawn(accept(25565, handle_minecraft));
     let proxy_handle = tokio::task::spawn(accept(25566, handle_proxy));
-    let minecraft_err = minecraft_handle.await.map_err::<anyhow::Error, _>(|e| e.into()).flatten();
+    let minecraft_err = minecraft_handle
+        .await
+        .map_err::<anyhow::Error, _>(|e| e.into())
+        .flatten();
     match minecraft_err {
         Ok(_) => (),
         Err(e) => error!("Minecraft handler error: {}", e),
     }
-    let proxy_err = proxy_handle.await.map_err::<anyhow::Error, _>(|e| e.into()).flatten();
+    let proxy_err = proxy_handle
+        .await
+        .map_err::<anyhow::Error, _>(|e| e.into())
+        .flatten();
     match proxy_err {
         Ok(_) => (),
         Err(e) => error!("Proxy handler error: {}", e),
@@ -172,9 +178,10 @@ async fn handle_proxy(conn: tokio::net::TcpStream) {
                 Err(anyhow::anyhow!("Message recieved shouldn't be serverbound"))?;
             }
         }
-        while !router_minecraft.exists(&domain).unwrap() {
+        while router_minecraft.exists(&domain).unwrap() {
             domain = random_id();
         }
+        domain = domain.to_lowercase();
         Message::AssignedDomain(domain.clone())
             .write_to(&mut conn)
             .await?;
@@ -224,8 +231,10 @@ async fn handle_minecraft(mut conn: tokio::net::TcpStream) {
     let result: anyhow::Result<()> = try {
         use netty::*;
         let len = read_varint(&mut conn).await?;
-        let id = read_varint(&mut conn).await?;
-        if len == 254 && id == 122 {
+        debug!("Read handshake length: {}", len);
+        if len == 254 {
+            debug!("Legacy ServerListPing response");
+            // && id == 122 doesn't catch <= 1.5
             // Protocol 127
             // Version 2.0.0
             // MOTD Minecraft versions below1.6isn't supported
@@ -244,6 +253,7 @@ async fn handle_minecraft(mut conn: tokio::net::TcpStream) {
             .await?;
             return;
         }
+        let id = read_varint(&mut conn).await?;
 
         if id != 0 {
             Err(anyhow::anyhow!("Invalid packet id"))?;
@@ -251,6 +261,7 @@ async fn handle_minecraft(mut conn: tokio::net::TcpStream) {
 
         let protocol_version = read_varint(&mut conn).await?;
         let addr = read_string(&mut conn).await?;
+        // Incorrect on 13w41a but no way to tell
         let _port = read_bigendian_u16(&mut conn).await?; // don't need it
         let is_serverlistping = match read_varint(&mut conn).await? {
             // actually varint but indistinguishible from a byte because it's either 1 or 2
@@ -261,15 +272,44 @@ async fn handle_minecraft(mut conn: tokio::net::TcpStream) {
             ))?,
         };
 
-        let addr = addr.split('.').next().unwrap(); // Can never panic
-        ROUTER_MINECRAFT.route(
-            &addr.to_owned(),
-            MinecraftConnection {
-                conn,
-                protocol_version,
-                is_serverlistping,
-            },
-        )?;
+        let addr = addr.split('.').next().unwrap().to_lowercase(); // Can never panic
+        if ROUTER_MINECRAFT.exists(&addr.to_owned()).unwrap() {
+            ROUTER_MINECRAFT.route(
+                &addr.to_owned(),
+                MinecraftConnection {
+                    conn,
+                    protocol_version,
+                    is_serverlistping,
+                },
+            )?;
+        } else if is_serverlistping {
+            let len = read_varint(&mut conn).await?;
+            if len != 1 {
+                Err(anyhow::anyhow!("Invalid serverlistping request"))?;
+            }
+            let request = read_varint(&mut conn).await?;
+            if request != 0 {
+                Err(anyhow::anyhow!("Invalid serverlistping request"))?;
+            }
+            let mut serverlistping_buf = vec![];
+            write_varint(&mut serverlistping_buf, 0).await?;
+            write_string(&mut serverlistping_buf, "{\"version\":{\"name\":\"No Server Here\",\"protocol\":2147483647},\"players\":{\"max\":0,\"online\":0},\"description\":{\"text\":\"This address isn't proxied to any server. Check your address.\"},\"favicon\":\"data:image/png;base64,<data>\"}").await?;
+            write_varint(&mut conn, serverlistping_buf.len().try_into()?).await?;
+            conn.write_all(serverlistping_buf.as_slice()).await?;
+            let mut ping = [0u8; 10];
+            conn.read_exact(&mut ping).await?;
+            conn.write_all(&ping).await?;
+        } else {
+            let mut kick_buf = vec![];
+            write_varint(&mut kick_buf, 0).await?;
+            write_string(
+                &mut kick_buf,
+                "{\"text\":\"This address isn't proxied to any server. Check your address.\"}",
+            )
+            .await?;
+            write_varint(&mut conn, kick_buf.len().try_into()?).await?;
+            conn.write_all(kick_buf.as_slice()).await?;
+        }
     };
     if let Err(err) = result {
         warn!("Error handling connection from minecraft: {:?}", err)

@@ -1,0 +1,51 @@
+  on:
+    push:
+      branches:
+        - master
+  jobs:
+    build-win:
+      runs-on: windows-latest
+      steps:
+        - uses: actions/checkout@v2
+        - uses: actions-rs/toolchain@v1
+          with:
+            toolchain: stable
+        - uses: actions-rs/cargo@v1
+          with:
+            command: build
+            args: --release --bin minerp-client
+        - uses: actions/upload-artifact@v2
+          with:
+            name: windows-exe
+            path: target/release/minerp-client.exe
+    build-linux:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v2
+        - uses: actions-rs/toolchain@v1
+          with:
+            toolchain: stable
+        - uses: actions-rs/cargo@v1
+          with:
+            command: build
+            use-cross: true
+            args: --release --target=x86_64-unknown-linux-musl --bin minerp-client
+        - uses: actions/upload-artifact@v2
+          with:
+            name: linux-bin
+            path: target/x86_64-unknown-linux-musl/release/minerp-client
+    build-mac:
+      runs-on: macos-latest
+      steps:
+        - uses: actions/checkout@v2
+        - uses: actions-rs/toolchain@v1
+          with:
+            toolchain: stable
+        - uses: actions-rs/cargo@v1
+          with:
+            command: build
+            args: --release --bin minerp-client
+        - uses: actions/upload-artifact@v2
+          with:
+            name: macos-bin
+            path: target/release/minerp-client

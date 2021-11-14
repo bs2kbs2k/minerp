@@ -7,8 +7,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.45"
+env_logger = "0.9.0"
 iced = { version = "0.3.0", features = ["tokio"] }
 lazy_static = "1.4.0"
+log = "0.4.14"
 minerp-common = { version = "0.1.0", path = "../minerp-common" }
 tokio = { version = "1.13.0", features = ["net", "rt-multi-thread", "macros"] }
 tokio-rustls = "0.23.1"
