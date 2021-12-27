@@ -141,7 +141,7 @@ async fn serve_api() {
     let register =
         warp::path!("register" / String / String).then(|domain: String, dest: String| async move {
             let cloned_domain = domain.clone();
-            let mut result = r#"{"success":false}"#;
+            let mut result = r#"{"success":true}"#;
             if ROUTER_MINECRAFT.clone().exists(&domain).unwrap_or(true) {
                 result = r#"{"success":false}"#
             }
