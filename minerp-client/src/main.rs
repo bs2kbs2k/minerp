@@ -202,7 +202,10 @@ impl iced::Application for App {
                     },
                     |_| AppMessage::StubMessage,
                 );
-                return iced::Command::batch([iced::Command::perform(future, AppMessage::DomainAssignment), cmd]);
+                return iced::Command::batch([
+                    iced::Command::perform(future, AppMessage::DomainAssignment),
+                    cmd,
+                ]);
             }
             AppMessage::StubMessage => (),
         }

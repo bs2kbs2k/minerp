@@ -13,5 +13,7 @@ log = "0.4.14"
 minerp-common = { version = "0.1.0", path = "../minerp-common" }
 rand = "0.8.4"
 rustls-pemfile = "0.2.1"
+serde_json = "1.0.73"
 tokio = { version = "1.13.0", features = ["net", "rt-multi-thread", "sync", "macros"] }
 tokio-rustls = "0.23.1"
+warp = "0.3.2"

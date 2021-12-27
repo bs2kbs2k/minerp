@@ -6,6 +6,7 @@ use lazy_static::lazy_static;
 use minerp_common::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls;
+use warp::Filter;
 
 #[macro_use]
 extern crate log;
@@ -98,6 +99,13 @@ lazy_static! {
         std::sync::Arc::new(Router::new());
     static ref ROUTER_PROXY: std::sync::Arc<Router<AuthKey, tokio_rustls::server::TlsStream<tokio::net::TcpStream>>> =
         std::sync::Arc::new(Router::new());
+    static ref LISTEN_ADDR: std::sync::Arc<str> = {
+        let addr = std::env::var("LISTEN_ADDR").expect("LISTEN_ADDR not set");
+        std::sync::Arc::from(addr.as_str())
+    };
+    static ref API_TASKS: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<!>>>,
+    > = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 }
 
 #[tokio::main]
@@ -106,6 +114,7 @@ async fn main() {
     let _ = CONN_CONF.clone(); // eager evaluate lazy static
     let minecraft_handle = tokio::task::spawn(accept(25565, handle_minecraft));
     let proxy_handle = tokio::task::spawn(accept(25566, handle_proxy));
+    let api_handle = tokio::task::spawn(serve_api());
     let minecraft_err = minecraft_handle
         .await
         .map_err::<anyhow::Error, _>(|e| e.into())
@@ -122,6 +131,100 @@ async fn main() {
         Ok(_) => (),
         Err(e) => error!("Proxy handler error: {}", e),
     }
+    match api_handle.await {
+        Ok(()) => (),
+        Err(e) => error!("API handler error: {}", e),
+    }
+}
+
+async fn serve_api() {
+    let register =
+        warp::path!("register" / String / String).then(|domain: String, dest: String| async move {
+            let cloned_domain = domain.clone();
+            let mut result = r#"{"success":false}"#;
+            if ROUTER_MINECRAFT.clone().exists(&domain).unwrap_or(true) {
+                result = r#"{"success":false}"#
+            }
+            let task = tokio::task::spawn(async move {
+                let mut guard = RouteGuard::new(ROUTER_MINECRAFT.clone(), cloned_domain).unwrap();
+                loop {
+                    let result: anyhow::Result<()> = try {
+                        let mut incoming_conn = guard.wait().await;
+                        let mut proxy_conn = tokio::net::TcpStream::connect(dest.as_str()).await?;
+                        tokio::task::spawn(async move {
+                            let result: anyhow::Result<()> = try {
+                                use netty::*;
+                                let mut handshake_buf = vec![];
+                                write_varint(&mut handshake_buf, 0_i32).await?;
+                                write_varint(&mut handshake_buf, incoming_conn.protocol_version)
+                                    .await?;
+                                write_string(&mut handshake_buf, "minerp.proxied.connection")
+                                    .await?;
+                                write_bigendian_u16(&mut handshake_buf, 25565).await?;
+                                write_varint(
+                                    &mut handshake_buf,
+                                    if incoming_conn.is_serverlistping {
+                                        1
+                                    } else {
+                                        2
+                                    },
+                                )
+                                .await?;
+                                write_varint(&mut proxy_conn, handshake_buf.len().try_into()?)
+                                    .await?;
+                                proxy_conn.write_all(handshake_buf.as_slice()).await?;
+                                tokio::io::copy_bidirectional(
+                                    &mut incoming_conn.conn,
+                                    &mut proxy_conn,
+                                )
+                                .await?;
+                            };
+                            if let Err(e) = result {
+                                warn!("{}", e);
+                            }
+                        });
+                    };
+                    if let Err(e) = result {
+                        warn!("{}", e);
+                    };
+                }
+            });
+            API_TASKS.lock().await.insert(domain, task);
+            result
+        });
+    let unregister = warp::path!("unregister" / String).then(|domain: String| async move {
+        if let Some(task) = API_TASKS.lock().await.remove(&domain) {
+            task.abort();
+            r#"{"success":true}"#
+        } else {
+            r#"{"success":false}"#
+        }
+    });
+    let list = warp::path!("list").then(|| async move {
+        let result: anyhow::Result<String> = try {
+            let table = ROUTER_MINECRAFT
+                .table
+                .read()
+                .map_err(|e| anyhow::anyhow!("Poisoned RWLock: {:?}", e))?;
+            let domains = table
+                .keys()
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "success": true,
+                "result": domains
+            }).to_string()
+        };
+        match result {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("{}", e);
+                r#"{"success":false}"#.to_owned()
+            }
+        }
+    });
+    warp::serve(register.or(unregister).or(list))
+        .run(([0, 0, 0, 0], 25567))
+        .await;
 }
 
 #[derive(Debug)]
@@ -272,7 +375,9 @@ async fn handle_minecraft(mut conn: tokio::net::TcpStream) {
             ))?,
         };
 
-        let addr = addr.split('.').next().unwrap().to_lowercase(); // Can never panic
+        let addr = addr
+            .strip_suffix(&(".".to_string() + LISTEN_ADDR.clone().to_string().as_str()))
+            .ok_or_else(|| anyhow::anyhow!("Invalid hostname to call from"))?;
         if ROUTER_MINECRAFT.exists(&addr.to_owned()).unwrap() {
             ROUTER_MINECRAFT.route(
                 &addr.to_owned(),
